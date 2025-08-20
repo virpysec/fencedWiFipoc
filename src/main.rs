@@ -16,6 +16,9 @@ const WIFI_PKT_DATA: u32 = wifi_promiscuous_pkt_type_t_WIFI_PKT_DATA;
 const WIFI_PKT_CTRL: u32 = wifi_promiscuous_pkt_type_t_WIFI_PKT_CTRL;
 const WIFI_PKT_MISC: u32 = wifi_promiscuous_pkt_type_t_WIFI_PKT_MISC;
 
+const TARGET_MAC: [u8; 6] = [0xA0, 0xFB, 0xC5, 0x84, 0xDF, 0xC9]; //my iphones MAC - privacy off
+static mut phone_counter: u32 = 0;
+
 extern "C" fn packet_handler( buf: *mut c_void, packet_type: wifi_promiscuous_pkt_type_t) {
     if buf.is_null() {
         return;
@@ -44,27 +47,33 @@ extern "C" fn packet_handler( buf: *mut c_void, packet_type: wifi_promiscuous_pk
 
                 let payload = std::slice::from_raw_parts(payload_ptr, payload_len);
 
-                if payload_len > 0 && payload[0] == 0x80 {
-                    println!("Beacon frame captured: RSSI={}", ctrl.rssi());
+                if payload_len > 0 && payload[0] == 0x40 {
+                    //println!("Beacon frame captured: RSSI={}", ctrl.rssi());
                     parse_beacon_packet(payload_ptr, payload_len);
 
-                    quick_mac_and_ssid_extract(payload);
+                    parse_probe_request(payload);
+
+                    //quick_mac_and_ssid_extract(payload);
                 }
             }
             WIFI_PKT_DATA => {
-                // println!(
-                //     "Data frame captured: Length={}, RSSI={}",
-                //     ctrl.sig_len(),
-                //     ctrl.rssi(),
-
-                // );
+                if raw_pkt.len() >= 16 {
+                    let src_mac = &raw_pkt[10..16];
+                    let dst_mac = &raw_pkt[4..10];
+                    
+                    if is_target_device(src_mac) || is_target_device(dst_mac) {
+                        // Use CSI data for distance estimation
+                        println!("rinky dink");
+                    }
+                }
             }
             WIFI_PKT_CTRL => {
-                println!(
-                    "Control frame captured: Length={}, RSSI={}",
-                    ctrl.sig_len(),
-                    ctrl.rssi()
-                );
+                // println!(
+                //     "Control frame captured: Length={}, RSSI={}",
+                //     ctrl.sig_len(),
+                //     ctrl.rssi()
+                // );
+                // quick_mac_and_ssid_extract(raw_pkt);
             }
             WIFI_PKT_MISC => {
                 println!(
@@ -81,6 +90,70 @@ extern "C" fn packet_handler( buf: *mut c_void, packet_type: wifi_promiscuous_pk
     }
 
     //println!("raa ting: {}", packet_type as u32);
+}
+
+fn is_target_device(mac: &[u8]) -> bool {
+    mac.len() >= 6 && mac[0..6] == TARGET_MAC
+}
+
+
+fn parse_probe_request(data: &[u8]) {
+    if data.len() >= 24 {
+
+        let device_mac = &data[10..16]; // Source MAC address
+        
+        // Only process packets from your phone
+        if !is_target_device(device_mac) {
+            return;
+        }
+
+        unsafe {
+            phone_counter += 1;
+            println!("Phone counter: {}", phone_counter);
+        }
+
+        
+        // Extract MAC addresses from probe request
+        // println!("Device MAC: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}", 
+        //          data[10], data[11], data[12], data[13], data[14], data[15]);
+        
+        // // Extract requested SSID (starts at byte 24 for probe requests)
+        // if let Some(ssid) = extract_probe_ssid(data) {
+        //     println!("Looking for network: {}", ssid);
+        // } else {
+        //     println!("Broadcast probe (looking for any network)");
+        // }
+        // println!("---");
+    }
+}
+
+fn extract_probe_ssid(data: &[u8]) -> Option<String> {
+    // Probe requests: skip 802.11 header (24 bytes), no fixed parameters
+    let mut pos = 24;
+    
+    while pos + 2 < data.len() {
+        let element_id = data[pos];
+        let element_length = data[pos + 1] as usize;
+        
+        // Element ID 0 = SSID
+        if element_id == 0 {
+            if element_length == 0 {
+                return None; // Broadcast probe
+            }
+            
+            if pos + 2 + element_length <= data.len() {
+                let ssid_bytes = &data[pos + 2..pos + 2 + element_length];
+                let ssid = String::from_utf8_lossy(ssid_bytes).to_string();
+                
+                if ssid.chars().all(|c| c.is_ascii_graphic() || c == ' ') {
+                    return Some(ssid);
+                }
+            }
+        }
+        
+        pos += 2 + element_length;
+    }
+    None
 }
 
 fn parse_beacon_packet(payload: *const u8, len: usize) {
